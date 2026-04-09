@@ -225,6 +225,13 @@ end
 function M.run_blame(obj, contents, lnum, revision, opts)
   local ret = {} --- @type table<integer,Gitsigns.BlameInfo>
 
+  -- The GitObj may have been closed while a debounced/async blame was in
+  -- flight (e.g. buffer detached between scheduling and resuming). In that
+  -- case `obj.repo` is nil — return an empty result instead of indexing it.
+  if not obj.repo then
+    return ret, {}
+  end
+
   if not obj.object_name or obj.repo.abbrev_head == '' then
     assert(contents, 'contents must be provided for untracked files')
     -- As we support attaching to untracked files we need to return something if
