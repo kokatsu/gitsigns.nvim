@@ -9,7 +9,7 @@ local Watcher = require('gitsigns.git.repo.watcher')
 
 local check_version = require('gitsigns.git.version').check
 
-local uv = vim.uv or vim.loop ---@diagnostic disable-line: deprecated
+local uv = vim.uv
 
 --- @class Gitsigns.RepoInfo
 --- @field gitdir string
@@ -36,8 +36,8 @@ local repo_cache = setmetatable({}, { __mode = 'v' })
 --- @param gitdir string
 --- @return boolean
 local function is_rebasing(gitdir)
-  return Path.exists(Path.join(gitdir, 'rebase-merge'))
-    or Path.exists(Path.join(gitdir, 'rebase-apply'))
+  return Path.exists(vim.fs.joinpath(gitdir, 'rebase-merge'))
+    or Path.exists(vim.fs.joinpath(gitdir, 'rebase-apply'))
 end
 
 --- @param value string?
@@ -87,7 +87,7 @@ end
 --- @param gitdir string
 --- @return string?
 local function read_head(gitdir)
-  return read_first_line_wait(Path.join(gitdir, 'HEAD'))
+  return read_first_line_wait(vim.fs.joinpath(gitdir, 'HEAD'))
 end
 
 --- @param head string?
@@ -127,11 +127,11 @@ end
 local function get_commondir(gitdir)
   -- In linked worktrees, `gitdir` points at `.git/worktrees/<name>` while most
   -- refs live under the main `.git` directory (the "commondir").
-  local commondir = read_first_line(Path.join(gitdir, 'commondir'))
+  local commondir = read_first_line(vim.fs.joinpath(gitdir, 'commondir'))
   if not commondir then
     return gitdir
   end
-  local abs = Path.join(gitdir, commondir)
+  local abs = vim.fs.joinpath(gitdir, commondir)
   return uv.fs_realpath(abs) or abs
 end
 
@@ -139,7 +139,7 @@ end
 --- @param refname string
 --- @return string?
 local function read_packed_ref(commondir, refname)
-  local packed_refs_path = Path.join(commondir, 'packed-refs')
+  local packed_refs_path = vim.fs.joinpath(commondir, 'packed-refs')
   wait_for_unlock(packed_refs_path)
   -- `packed-refs` is a flat map from refname to OID (with optional peeled
   -- entries). Read it linearly as this is only used on debounced fs events.
@@ -179,10 +179,10 @@ local function resolve_ref(gitdir, commondir, refname)
     end
     seen[current] = true
 
-    local line = read_first_line_wait(Path.join(gitdir, current))
+    local line = read_first_line_wait(vim.fs.joinpath(gitdir, current))
 
     if not line and commondir and commondir ~= gitdir then
-      line = read_first_line_wait(Path.join(commondir, current))
+      line = read_first_line_wait(vim.fs.joinpath(commondir, current))
     end
 
     if not line then
@@ -243,7 +243,7 @@ local function get_head_oid0(gitdir, commondir)
   end
 
   -- Reftable stores refs in a different backend (no loose/packed refs).
-  if Path.exists(Path.join(commondir, 'reftable')) then
+  if Path.exists(vim.fs.joinpath(commondir, 'reftable')) then
     return nil, 'reftable'
   end
 
@@ -383,7 +383,12 @@ function M:files_changed(base, include_untracked)
     return ret
   end
 
-  local results = self:command({ 'status', '--porcelain', '--ignore-submodules' })
+  local results = self:command(util.flatten({
+    'status',
+    '--porcelain',
+    '--ignore-submodules',
+    include_untracked and '--untracked-files=all',
+  }))
 
   for _, line in ipairs(results) do
     local status = line:sub(1, 2)
@@ -641,7 +646,8 @@ function M.get_info(dir, gitdir, worktree)
       ignore_error = true,
     })[1])
     if core_worktree then
-      worktree = Path.is_abs(core_worktree) and core_worktree or Path.join(gitdir, core_worktree)
+      worktree = Path.is_abs(core_worktree) and core_worktree
+        or vim.fs.joinpath(gitdir, core_worktree)
     else
       worktree = vim.fs.dirname(gitdir)
     end
@@ -717,7 +723,7 @@ function M.get_info(dir, gitdir, worktree)
     toplevel = toplevel_r,
     gitdir = gitdir_r,
     abbrev_head = process_abbrev_head(gitdir_r, stdout[3], toplevel_r),
-    detached = gitdir_r ~= assert(normalize_path(Path.join(toplevel_r, '.git'))),
+    detached = gitdir_r ~= assert(normalize_path(vim.fs.joinpath(toplevel_r, '.git'))),
   }
 end
 
@@ -754,7 +760,8 @@ function M:ls_tree(path, revision)
       return self:ls_tree(old_path, revision)
     end
 
-    return nil, ('%s not found in %s'):format(path, revision)
+    -- The revision is valid but may predate the file.
+    return
   end
 
   local info, relpath = unpack(vim.split(res, '\t'))
@@ -774,6 +781,7 @@ end
 --- @field relpath? string nil if file is not in working tree
 --- @field mode_bits? string
 --- @field object_name? string nil if file is untracked
+--- @field object_missing? true File is missing from the selected revision
 --- @field i_crlf? boolean (requires git version >= 2.9)
 --- @field w_crlf? boolean (requires git version >= 2.9)
 --- @field has_conflicts? true
@@ -869,6 +877,18 @@ function M:file_info(file, revision)
         mode_bits = info.mode_bits,
         object_name = info.object_name,
       }
+    end
+
+    if not info then
+      local worktree_info, err2 = self:ls_files(file)
+      if err2 or not worktree_info or not worktree_info.relpath then
+        return nil, err2
+      end
+
+      -- Keep current path metadata for tracked-file handling, but mark the
+      -- selected base as empty.
+      worktree_info.object_missing = true
+      return worktree_info
     end
   else
     return self:ls_files(file)

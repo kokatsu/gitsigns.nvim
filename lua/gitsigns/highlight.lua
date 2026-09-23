@@ -6,8 +6,6 @@ local api = vim.api
 --- @field hidden? boolean
 --- @field fg_factor? number
 
-local nvim10 = vim.fn.has('nvim-0.10') == 1
-
 local M = {}
 
 --- Use array of dict so we can iterate deterministically
@@ -30,7 +28,7 @@ local function gen_hl(staged, kind, ty)
   local cty = capitalise(ty)
   local hl = ('GitSigns%s%s%s'):format(staged and 'Staged' or '', cty, kind)
 
-  if kind == 'Ln' and (ty == 'delete' or 'ty' == 'topdelete') then
+  if kind == 'Ln' and (ty == 'delete' or ty == 'topdelete') then
     return
   end
 
@@ -77,9 +75,9 @@ local function gen_hl(staged, kind, ty)
         or ty == 'change' and 'DiffModifiedGutter'
         or '???',
 
-      ty == 'add' and (nvim10 and 'Added' or 'diffAdded')
-        or ty == 'delete' and (nvim10 and 'Removed' or 'diffRemoved')
-        or ty == 'change' and (nvim10 and 'Changed' or 'diffChanged')
+      ty == 'add' and 'Added'
+        or ty == 'delete' and 'Removed'
+        or ty == 'change' and 'Changed'
         or '???',
 
       ('Diff%s'):format(cty),
@@ -110,6 +108,14 @@ for _, staged in ipairs({ false, true }) do
 end
 
 vim.list_extend(M.hls, {
+  {
+    GitSignsDiffStaged = {
+      'Normal',
+      fg_factor = 0.15,
+      desc = 'Used for fully staged filenames in the diff panel.',
+    },
+  },
+
   {
     GitSignsAddPreview = {
       'GitGutterAddLine',
@@ -309,14 +315,6 @@ function M.setup_highlights()
   end
 end
 
-function M.setup()
-  M.setup_highlights()
-  api.nvim_create_autocmd('ColorScheme', {
-    group = 'gitsigns',
-    callback = M.setup_highlights,
-  })
-end
-
 do --- temperature highlight
   local temp_colors = {} --- @type table<integer,string>
   local normal_bg --- @type [integer,integer,integer]?
@@ -357,6 +355,14 @@ do --- temperature highlight
     temp_colors[color] = hl_name
     return hl_name
   end
+end
+
+do -- Module-level activation
+  M.setup_highlights()
+  api.nvim_create_autocmd('ColorScheme', {
+    group = api.nvim_create_augroup('gitsigns.highlight', {}),
+    callback = M.setup_highlights,
+  })
 end
 
 return M

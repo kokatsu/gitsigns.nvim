@@ -10,7 +10,7 @@ local eq = helpers.eq
 local buf_get_var = helpers.api.nvim_buf_get_var
 local system = helpers.fn.system
 local nvim_test_clear = helpers.clear
-local uv = vim.uv or vim.loop ---@diagnostic disable-line: deprecated
+local uv = vim.uv
 
 --- @return boolean
 local function is_win()
@@ -329,7 +329,7 @@ function M.cleanup()
       pcall(vim.cmd, 'silent! cd ' .. vim.fn.fnameescape(tmpdir0))
 
       for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-        local name = vim.api.nvim_buf_get_name(buf)
+        local name = vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_name(buf) or ''
         if name ~= '' and name:find(root, 1, true) then
           pcall(vim.api.nvim_buf_delete, buf, { force = true })
         end

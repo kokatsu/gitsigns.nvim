@@ -70,7 +70,6 @@ describe('gitsigns (with screen)', function()
       [12] = { foreground = Screen.colors.DodgerBlue, background = Screen.colors.WebGray },
     }
 
-    -- Use the classic vim colorscheme, not the new defaults in nvim >= 0.10
     if fn.has('nvim-0.12') == 0 then
       default_attrs[2].foreground = Screen.colors.NvimDarkCyan
       default_attrs[3].foreground = Screen.colors.NvimDarkGreen
@@ -99,8 +98,6 @@ describe('gitsigns (with screen)', function()
   end)
 
   it('gitdir watcher works on a fresh repo', function()
-    --- @type integer
-    local nvim_ver = exec_lua('return vim.version().minor')
     screen:try_resize(20, 6)
     setup_test_repo({ no_add = true })
     config.watch_gitdir.enable = true
@@ -120,7 +117,7 @@ describe('gitsigns (with screen)', function()
 
     check({
       status = { head = '', added = 18, changed = 0, removed = 0 },
-      signs = { untracked = nvim_ver == 9 and 8 or 7 },
+      signs = { untracked = 7 },
     })
 
     git('add', test_file)
@@ -407,26 +404,6 @@ describe('gitsigns (with screen)', function()
       setup_gitsigns(config)
     end)
 
-    local function stub_notify_once()
-      exec_lua(function()
-        _G.__gitsigns_notify_once_orig = vim.notify_once
-        vim.notify_once = function() end
-      end)
-    end
-
-    local function restore_notify_once()
-      exec_lua(function()
-        if _G.__gitsigns_notify_once_orig then
-          vim.notify_once = _G.__gitsigns_notify_once_orig
-          _G.__gitsigns_notify_once_orig = nil
-        end
-      end)
-    end
-
-    after_each(function()
-      restore_notify_once()
-    end)
-
     local function blame_line_ui_test(autocrlf, file_ending)
       setup_test_repo()
       exec_lua([[vim.g.editorconfig = false]])
@@ -485,10 +462,6 @@ describe('gitsigns (with screen)', function()
     end)
 
     it('falls back when function formatters return invalid virt_text', function()
-      -- nvim 0.10.4 can hang screen tests that render notify_once messages.
-      -- This spec only cares about falling back to the default formatter.
-      stub_notify_once()
-
       exec_lua(function()
         require('gitsigns.config').config.current_line_blame_formatter = function()
           return 'not virt_text'
@@ -681,6 +654,19 @@ describe('gitsigns (with screen)', function()
   end)
 
   describe('configuration', function()
+    it('reads defaults from diffopt', function()
+      helpers.setup_path()
+      command('set diffopt=internal,indent-heuristic,algorithm:histogram,linematch:30')
+
+      eq({
+        algorithm = 'histogram',
+        indent_heuristic = true,
+        internal = true,
+        linematch = 30,
+        vertical = true,
+      }, exec_lua("return require('gitsigns.config').config.diff_opts"))
+    end)
+
     it('validates union-typed fields', function()
       helpers.setup_path()
 
@@ -746,6 +732,109 @@ describe('gitsigns (with screen)', function()
 
       command('Gitsigns change_base ~')
 
+      check({
+        status = { head = 'main', added = 1, changed = 0, removed = 0 },
+        signs = { added = 1 },
+      })
+    end)
+
+    it('treats a file missing at the base as added', function()
+      setup_test_repo()
+      write_to_file(newfile, { 'line one', 'line two' })
+      git('add', newfile)
+      git('commit', '-m', 'add new file')
+
+      setup_gitsigns(config)
+      edit(newfile)
+
+      check({
+        status = { head = 'main', added = 0, changed = 0, removed = 0 },
+        signs = {},
+      })
+
+      command('Gitsigns change_base HEAD~1')
+
+      check({
+        status = { head = 'main', added = 2, changed = 0, removed = 0 },
+        signs = { added = 2 },
+      })
+
+      local sha = exec_lua(function()
+        local async = require('gitsigns.async')
+        return async
+          .run(function()
+            local bcache = require('gitsigns.cache').cache[vim.api.nvim_get_current_buf()]
+            local git_obj = bcache.git_obj
+            local blame = git_obj:run_blame(
+              vim.api.nvim_buf_get_lines(0, 0, -1, false),
+              nil,
+              git_obj.revision,
+              {}
+            )
+            return blame[1].commit.sha
+          end)
+          :wait(5000)
+      end)
+      eq(string.rep('0', 40), sha)
+    end)
+
+    it('attaches to a file missing at the configured base', function()
+      setup_test_repo()
+      write_to_file(newfile, { 'line one', 'line two' })
+      git('add', newfile)
+      git('commit', '-m', 'add new file')
+
+      config.base = 'HEAD~1'
+      setup_gitsigns(config)
+      edit(newfile)
+
+      check({
+        status = { head = 'main', added = 2, changed = 0, removed = 0 },
+        signs = { added = 2 },
+      })
+    end)
+
+    it('preserves the current base when the new revision is invalid', function()
+      setup_test_repo()
+      edit(test_file)
+      feed('oEDIT<esc>')
+      command('write')
+      git('add', test_file)
+      git('commit', '-m', 'commit on main')
+
+      setup_gitsigns(config)
+      check({
+        status = { head = 'main', added = 0, changed = 0, removed = 0 },
+        signs = {},
+      })
+      command('Gitsigns change_base HEAD~1')
+
+      check({
+        status = { head = 'main', added = 1, changed = 0, removed = 0 },
+        signs = { added = 1 },
+      })
+
+      local err = exec_lua(function()
+        local async = require('gitsigns.async')
+        return async
+          .run(function()
+            return async.await(
+              3,
+              require('gitsigns').change_base,
+              '__gitsigns_missing_ref__',
+              false
+            )
+          end)
+          :wait(5000)
+      end)
+
+      eq(true, err:find('__gitsigns_missing_ref__', 1, true) ~= nil)
+      eq(
+        'HEAD~1',
+        exec_lua(
+          "return require('gitsigns.cache').cache[vim.api.nvim_get_current_buf()].git_obj.revision"
+        )
+      )
       check({
         status = { head = 'main', added = 1, changed = 0, removed = 0 },
         signs = { added = 1 },
@@ -1163,21 +1252,12 @@ describe('gitsigns (with screen)', function()
 
     feed('x')
 
-    if fn.has('nvim-0.11') > 0 then
-      screen:expect({
-        grid = [[
-        {12:~ }^orem ipsum        |
-        {6:~                   }|
-        ]],
-      })
-    else
-      screen:expect({
-        grid = [[
-        {2:~ }^orem ipsum        |
-        {6:~                   }|
-        ]],
-      })
-    end
+    screen:expect({
+      grid = [[
+      {12:~ }^orem ipsum        |
+      {6:~                   }|
+      ]],
+    })
   end)
 
   it('handle #521', function()
@@ -1190,28 +1270,15 @@ describe('gitsigns (with screen)', function()
     feed('dd')
 
     local function check_screen(unchanged)
-      if fn.has('nvim-0.11') > 0 then
-        -- TODO(lewis6991): ???
-        screen:expect({
-          grid = [[
-          {11:^ }^is                |
-          {1:  }a                 |
-          {1:  }file              |
-                              |
-        ]],
-          unchanged = unchanged,
-        })
-      else
-        screen:expect({
-          grid = [[
-          {4:^ }^is                |
-          {1:  }a                 |
-          {1:  }file              |
-          {1:  }used              |
-        ]],
-          unchanged = unchanged,
-        })
-      end
+      screen:expect({
+        grid = [[
+        {11:^ }^is                |
+        {1:  }a                 |
+        {1:  }file              |
+                            |
+      ]],
+        unchanged = unchanged,
+      })
     end
 
     check_screen()

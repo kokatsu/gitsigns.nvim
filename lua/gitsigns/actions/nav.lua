@@ -107,11 +107,15 @@ function M.nav_hunk(direction, opts)
   opts = process_nav_opts(opts)
   local bufnr = api.nvim_get_current_buf()
   local bcache = cache[bufnr]
-  if not bcache then
+  local view = require('gitsigns.unified').get_view()
+  local hunks --- @type Gitsigns.Hunk.Hunk[]?
+  if view then
+    hunks = view.hunks
+  elseif bcache then
+    hunks = get_nav_hunks(bufnr, opts.target, opts.greedy)
+  else
     return
   end
-
-  local hunks = get_nav_hunks(bufnr, opts.target, opts.greedy)
 
   if not hunks or vim.tbl_isempty(hunks) then
     if opts.navigation_message then
@@ -133,7 +137,7 @@ function M.nav_hunk(direction, opts)
       if opts.navigation_message then
         api.nvim_echo({ { 'No more hunks', 'WarningMsg' } }, false, {})
       end
-      local _, col = vim.fn.getline(line):find('^%s*')
+      local _, col = (vim.fn.getline(line) --[[@as string]]):find('^%s*')
       --- @cast col -?
       api.nvim_win_set_cursor(0, { line, col })
       return
@@ -149,13 +153,14 @@ function M.nav_hunk(direction, opts)
 
   vim.cmd([[ normal! m' ]]) -- add current cursor position to the jump list
 
-  local _, col = vim.fn.getline(line):find('^%s*')
+  local _, col = (vim.fn.getline(line) --[[@as string]]):find('^%s*')
   --- @cast col -?
   api.nvim_win_set_cursor(0, { line, col })
 
   if opts.foldopen then
     vim.cmd('silent! foldopen!')
   end
+  require('gitsigns.unified').reveal()
 
   -- schedule so the cursor change can settle, otherwise the popup might
   -- appear in the old position

@@ -49,11 +49,7 @@ test: nvim-test
 	-@[ -t 0 ] && stty sane || true
 
 .PHONY: test-all
-test-all: test-010 test-011 test-012 test-nightly
-
-.PHONY: test-010
-test-010:
-	$(MAKE) test NVIM_TEST_VERSION=v0.10.4
+test-all: test-011 test-012 test-nightly
 
 .PHONY: test-011
 test-011:
@@ -144,7 +140,7 @@ else
     EMMYLUA_ARCH ?= x64
 endif
 
-EMMYLUA_REF := 0.22.0
+EMMYLUA_REF := 0.23.2
 EMMYLUA_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
 
 EMMYLUA_RELEASE_URL_BASE := https://github.com/EmmyLuaLs/emmylua-analyzer-rust/releases/download/$(EMMYLUA_REF)

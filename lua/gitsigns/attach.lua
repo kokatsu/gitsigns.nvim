@@ -15,10 +15,12 @@ local throttle_async = require('gitsigns.debounce').throttle_async
 
 local api = vim.api
 local current_buf = api.nvim_get_current_buf
-local uv = vim.uv or vim.loop ---@diagnostic disable-line: deprecated
+local uv = vim.uv
 
 --- @class gitsigns.attach
 local M = {}
+
+local group = api.nvim_create_augroup('gitsigns.attach', {})
 
 --- @param name string
 --- @return string? rel_path
@@ -62,7 +64,7 @@ local function on_lines(_, bufnr, _, first, last_orig, last_new, byte_count)
     -- call which indicates no changes.
     return
   end
-  return manager.on_lines(bufnr, first, last_orig, last_new)
+  return manager.handle_on_lines(bufnr, first, last_orig, last_new)
 end
 
 --- @param _ 'reload'
@@ -76,7 +78,7 @@ end
 --- @param _ 'detach'
 --- @param bufnr integer
 local function on_detach(_, bufnr)
-  api.nvim_clear_autocmds({ group = 'gitsigns', buffer = bufnr })
+  api.nvim_clear_autocmds({ group = group, buffer = bufnr })
   M.detach(bufnr, true)
 end
 
@@ -102,26 +104,6 @@ local function on_attach_pre(bufnr)
   end
   return gitdir, toplevel
 end
-
-local setup = Util.once(function()
-  manager.setup()
-
-  require('gitsigns.current_line_blame').setup()
-
-  api.nvim_create_autocmd('BufFilePre', {
-    group = 'gitsigns',
-    desc = 'Gitsigns: detach when changing buffer names',
-    callback = function(args)
-      M.detach(args.buf)
-    end,
-  })
-
-  api.nvim_create_autocmd('VimLeavePre', {
-    desc = 'Gitsigns: detach from all buffers',
-    group = 'gitsigns',
-    callback = M.detach_all,
-  })
-end)
 
 --- @class (exact) Gitsigns.GitContext
 --- @field file string Path to the file represented by the buffer.
@@ -185,7 +167,7 @@ local function handle_moved(bufnr, old_relpath)
     git_obj.relpath = new_name
     git_obj.file = git_obj.repo.toplevel .. '/' .. new_name
   elseif git_obj.orig_relpath then
-    local orig_file = Path.join(git_obj.repo.toplevel, git_obj.orig_relpath)
+    local orig_file = vim.fs.joinpath(git_obj.repo.toplevel, git_obj.orig_relpath)
     if not git_obj.repo:file_info(orig_file, git_obj.revision) then
       return
     end
@@ -198,7 +180,7 @@ local function handle_moved(bufnr, old_relpath)
     return
   end
 
-  git_obj.file = Path.join(git_obj.repo.toplevel, git_obj.relpath)
+  git_obj.file = vim.fs.joinpath(git_obj.repo.toplevel, git_obj.relpath)
   bcache.file = git_obj.file
   git_obj:refresh()
   if not bcache:schedule() then
@@ -274,7 +256,7 @@ local function repo_update_handler(bufnr)
     end
   end
 
-  require('gitsigns.manager').update(bufnr)
+  manager.update(bufnr)
 end
 
 --- @param opts Gitsigns.AttachOpts?
@@ -294,8 +276,6 @@ M.attach = throttle_async({ hash = attach_hash }, function(opts)
   local ctx = attach_opts.ctx
   local passed_ctx = ctx ~= nil
   local trigger = attach_opts.trigger
-
-  setup()
 
   if cache[cbuf] then
     dprint('Already attached')
@@ -323,6 +303,16 @@ M.attach = throttle_async({ hash = attach_hash }, function(opts)
     assert(ctx)
   end
 
+  -- get_buf_context() -> on_attach_pre() awaits config._on_attach_pre, which
+  -- yields control. The buffer may be deleted while we're suspended there
+  -- (e.g. a plugin opens a scratch buffer, writes it, then force-wipes it
+  -- before this coroutine resumes), so re-validate before touching cbuf
+  -- again, matching the checks already done after this function's other two
+  -- yield points below.
+  if not api.nvim_buf_is_valid(cbuf) then
+    return
+  end
+
   local encoding = vim.bo[cbuf].fileencoding
   if encoding == '' then
     encoding = 'utf-8'
@@ -330,7 +320,7 @@ M.attach = throttle_async({ hash = attach_hash }, function(opts)
 
   local file, toplevel = ctx.file, ctx.toplevel
   if not Path.is_abs(file) and toplevel then
-    file = Path.join(toplevel, file)
+    file = vim.fs.joinpath(toplevel, file)
   end
 
   local revision = ctx.base or config.base
@@ -401,6 +391,10 @@ M.attach = throttle_async({ hash = attach_hash }, function(opts)
     return
   end
 
+  -- From here the buffer is accepted; activate manager infrastructure and the
+  -- modules that subscribe to it.
+  manager.setup()
+
   cache[cbuf] = Cache.new(cbuf, file, git_obj)
 
   if not api.nvim_buf_is_loaded(cbuf) then
@@ -434,7 +428,7 @@ M.attach = throttle_async({ hash = attach_hash }, function(opts)
   })
 
   api.nvim_create_autocmd('BufWrite', {
-    group = 'gitsigns',
+    group = group,
     buffer = cbuf,
     callback = function()
       manager.update_sync_debounced(cbuf)
@@ -480,10 +474,25 @@ function M.detach(bufnr, keep_signs)
 
   manager.detach(bufnr, keep_signs)
 
-  -- Clear status variables
-  Status.clear(bufnr)
-
   Cache.destroy(bufnr)
+end
+
+do -- Module-level activation
+  api.nvim_create_autocmd('BufFilePre', {
+    group = group,
+    desc = 'Gitsigns: detach when changing buffer names',
+    callback = function(args)
+      M.detach(args.buf)
+    end,
+  })
+
+  api.nvim_create_autocmd('VimLeavePre', {
+    desc = 'Gitsigns: detach from all buffers',
+    group = group,
+    callback = function()
+      M.detach_all()
+    end,
+  })
 end
 
 return M
